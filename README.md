@@ -165,6 +165,41 @@ yolo export model=runs/.../best.pt format=engine imgsz=1280 half=True dynamic=Tr
 ```
 > 注：TRT 引擎与硬件/CUDA 版本绑定，需目标机重新导出；ONNX 可跨机通用（只需同 opset）。
 
+### 4.5 TensorRT 为什么快？（原理解析）
+
+本项目实测 TensorRT FP16 比 PyTorch **快 ~3 倍（17.4ms→5.9ms）**，这不是玄学，而是 TRT 在「部署阶段」做了四件事，把训练框架（PyTorch eager / ONNXRuntime）的通用开销全部榨掉：
+
+#### (1) 计算图优化（Graph Optimization / Kernel Fusion）
+PyTorch 跑一层网络 = Python 调度成百上千个独立 CUDA kernel（Conv、BN、SiLU、Add、Mul…），每个 kernel 都要从显存读写中间张量，GPU 大量时间浪费在 **kernel launch 开销 + 显存带宽** 上，而非真正算浮点。
+TRT 把整图解析成计算图后做 **层融合（layer fusion）**：
+- `Conv + BN + SiLU` → 融合成 **1 个 kernel**（CBR 块常见）
+- `Add + Mul + Activation` 等逐元素操作合并
+- 移除训练中才需要的 Dropout / 冗余 Reshape / 恒等算子
+融合后 kernel 数量从几百降到几十，**显存往返次数骤减**，这是提速的主因（约 1.5~2×）。
+
+#### (2) 精度校准与低精度内核（FP16 / INT8）
+- **FP16**：本项目用的就是它。A100/4090 的 Tensor Core 在 FP16 下吞吐是 FP32 的 **2~8 倍**，且 YOLO 检测对 FP16 舍入不敏感（实测 conf 仅差 0.0001，框一致率 100%）。
+- **INT8（PTQ）**：用校准集统计激活分布做量化，权重/激活压到 8bit，速度再翻倍，但需校准且可能掉点，本项目未用（FP16 已够）。
+
+#### (3) 算子/kernel 自动调优（Kernel Auto-Tuning / Profiling）
+TRT 在构建引擎时，会在目标 GPU 上 **实际 benchmark 每一种可能的 kernel 实现**（不同 tiling、不同算法如 cudnn 的 conv algo），选当前输入形状下最快的组合。PyTorch 默认用通用 kernel，不针对你的 imgsz=1280 做特调；TRT 是「为这块卡 + 这个尺寸」专门编译出的引擎。
+
+#### (4) 显存与执行流优化
+- **静态显存规划**：一次性分配所有中间张量，推理时零 malloc/free（PyTorch eager 每次前向都有隐性分配）。
+- **动态显存复用**：不重叠的 tensor 复用同一块显存。
+- **CUDA Graph（可选）**：把整串 kernel 提交固化成图，进一步消除 launch 开销（本项目用 ultralytics 导出 engine 已隐含）。
+- **Constant Folding**：把权重预处理（如 BN 参数折叠进 Conv 权重）在构建期算完，运行时不再算。
+
+#### 代价与约束（落地必知）
+| 项 | 说明 |
+|----|------|
+| **硬件绑定** | TRT 引擎在构建时绑定 GPU 架构（sm_xx）+ CUDA/TensorRT 版本，换卡/升级驱动需 **重新导出** |
+| **动态形状** | 开 `dynamic=True` 后 TRT 为多个 profile 各编译一份，引擎更大、首帧稍慢；固定 imgsz 最快 |
+| **不支持的算子** | 自定义/非常规算子需写 plugin；YOLO 标准结构无此问题 |
+| **构建耗时** | 导出引擎需几十秒~几分钟（ profiling 阶段），但一次构建、长期受益 |
+
+> **一句话**：PyTorch 是为「灵活训练」设计的通用执行器，TensorRT 是为「固定模型 + 固定硬件」专门编译的部署级优化器——它把「通用框架开销」换成了「针对你这张卡的极致内核」，所以同模型同卡能稳定快 2~4 倍且精度无损。
+
 ### 4.3 工程落地设计
 - **负样本处理**：推理对空图直接输出 `[]`，避免误检刷 FP（官方对非空检测每个框计 FP）。
 - **conf 过滤**：提交 JSON 保留全部 conf≥0.25 的框，官方统一过滤，避免本地硬编码阈值与评测不一致。
@@ -273,6 +308,29 @@ python scripts/train_breview.py --model yolo11m.pt --name breview
 
 ---
 
+## 11. 大模型方案对比：LocateAnything (NVIDIA 3B VLM) 零样本检测
+
+为验证「专用小模型 vs 通用大模型」在考场手机场景的差距，本项目额外接入 **NVIDIA LocateAnything-3B**（基于 Qwen2.5-3B 的视觉语言定位模型，Parallel Box Decoding，3B 参数，7.3GB 权重）做零样本开放词汇检测，prompt 直接用官方模板 `Locate all the instances that matches the following description: phone.`，**未做任何微调 / 无训练数据**。
+
+### 11.1 实测对比（同一验证集 2739 张，官方评测协议）
+
+| 模型 | 参数量 | 权重 | 训练方式 | mAP@0.5 | Precision | Recall | 综合分 | 单图耗时 |
+|------|--------|------|----------|---------|-----------|--------|--------|----------|
+| **YOLO11m** | 20.05M | 115 MB | 专类训练(1280) | **0.886** | **0.902** | **0.925** | **89.86** | 17.4 ms |
+| LocateAnything-3B | 3B | 7.3 GB | 零样本 prompt | 0.589 | 0.673 | 0.822 | 66.10 | 110 ms |
+
+> 评测环境：RTX 4090 D。LocateAnything 输出为文本 token `<box>x1,y1,x2,y2</box>`，无显式置信度，统一赋 `conf=0.5`（高于官方 0.25 过滤阈值，保证参与评测）。显存占用 ~7.8 GB（加载即占满权重，与单图无关）。
+
+### 11.2 结论与洞察
+
+1. **专用小模型碾压通用大模型**：YOLO11m（20M）比 LocateAnything（3B，大 150 倍）综合分高 **23.8 分**。考场手机是高度特定的垂直目标，大模型未见过此类分布（监控远景、黑边、宣传画手机），零样本泛化明显不足。
+2. **Recall 差距小、Precision/mAP 差距大**：大模型 Recall 0.82（大部分手机能「找出来」），但 Precision 仅 0.67、mAP 0.59——**误检多 + 定位框偏粗**（生成式坐标量化到 [0,1000]，精度天然低于 YOLO 像素级回归）。
+3. **速度差 6 倍**：大模型 110ms/图（生成式自回归解码，即便 hybrid 模式仍慢），YOLO 17ms。大模型完全不适合实时监考多路流。
+4. **价值定位**：LocateAnything 类大模型适合 **开放词汇 / 长尾 / 零样本冷启动**（如「找出画面里所有遥控器」这种没训练过的类），或做**自动标注工具**反哺 YOLO 训练；作为**最终检测模型直接上线**在此场景不划算。
+5. **可改进方向**：若对大模型微调（用本项目 10960 张训练集 LoRA/全参微调），分数可大幅提升，但 7.3GB 权重 + 110ms 延迟在边缘监考设备仍是硬伤——**垂直场景专用小模型仍是落地最优解**。
+
+---
+
 ## 9. 文件结构
 ```
 shoujijiance/
@@ -297,7 +355,8 @@ shoujijiance/
 │   ├── review_app.py / review.html  # 人工核查工具 ★
 │   ├── build_breview_dataset.py  # 核查结果→YOLO标签 ★
 │   ├── train_breview.py          # 回流训练
-│   └── select_best_breview.py    # 按综合分选best(⚠含subprocess bug,用scan_conf替代)
+│   ├── select_best_breview.py    # 按综合分选best(⚠含subprocess bug,用scan_conf替代)
+│   └── eval_locateanything.py    # 大模型对比: LocateAnything零样本检测评测 ★
 ├── docs/
 │   └── 实验文档.md                # 完整实验日志(各版本对比/消融)
 └── submit_b11m_adaptive_c0.40_0.60.json  # 最终提交文件(B榜90.90)

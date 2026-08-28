@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B榜检测结果人工核查</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC",Microsoft YaHei,sans-serif;
+         background:#1e1e1e; color:#eee; }
+  header { position:sticky; top:0; background:#252526; padding:10px 16px; display:flex;
+           align-items:center; gap:16px; border-bottom:1px solid #333; z-index:10; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .meta { font-size:13px; color:#9cdcfe; }
+  .navbtns { margin-left:auto; display:flex; gap:8px; }
+  button { background:#0e639c; color:#fff; border:none; padding:8px 14px; border-radius:5px;
+           cursor:pointer; font-size:13px; }
+  button:hover { background:#1177bb; }
+  button.ghost { background:#3a3d41; }
+  button.ghost:hover { background:#4a4d51; }
+  .wrap { display:flex; height:calc(100vh - 52px); }
+  .left { flex:1; overflow:auto; display:flex; align-items:center; justify-content:center;
+          padding:16px; background:#1e1e1e; }
+  .stage { position:relative; max-width:100%; }
+  .stage img { display:block; max-width:100%; max-height:calc(100vh - 110px); }
+  .box-svg { position:absolute; left:0; top:0; pointer-events:none; }
+  .box-svg.active { pointer-events:all; }
+  .box-rect { fill:none; stroke:#00ff88; stroke-width:2; }
+  .box-rect.sel-none { stroke:#ff4d4d; stroke-dasharray:6 4; }
+  .box-rect.sel-ok { stroke:#00ff88; }
+  .missed-rect { fill:rgba(255,200,0,0.12); stroke:#ffc800; stroke-width:2; stroke-dasharray:4 3; cursor:pointer; }
+  .missed-label { fill:#000; font-size:12px; font-weight:700; }
+  .missed-label-bg { fill:#ffc800; }
+  .draw-btn { background:#5a4a00; border:1px solid #ffc800; color:#ffe680; }
+  .draw-btn.on { background:#ffc800; color:#000; font-weight:700; }
+  .box-label { fill:#000; font-size:12px; font-weight:700; }
+  .box-label-bg { fill:#00ff88; }
+  .box-label-bg.none { fill:#ff4d4d; }
+  .right { width:340px; background:#252526; border-left:1px solid #333; padding:14px;
+           overflow:auto; display:flex; flex-direction:column; gap:14px; }
+  .sec-title { font-size:13px; color:#ccc; margin:0 0 6px; font-weight:600;
+               border-bottom:1px solid #3a3d41; padding-bottom:4px; }
+  .empty-tip { background:#3a2d10; color:#ffd479; padding:10px; border-radius:6px;
+               font-size:13px; line-height:1.5; }
+  .box-item { border:1px solid #3a3d41; border-radius:6px; padding:8px 10px; margin-bottom:8px; }
+  .box-item .bid { font-size:13px; color:#9cdcfe; margin-bottom:6px; }
+  .opt { display:flex; gap:8px; }
+  .opt label { flex:1; text-align:center; padding:7px 4px; border-radius:5px; cursor:pointer;
+               font-size:13px; border:1px solid #4a4d51; background:#2d2d2d; }
+  .opt input { display:none; }
+  .opt input:checked + span { font-weight:700; }
+  .opt label.ok.sel { background:#0e5026; border-color:#00ff88; color:#aaffd0; }
+  .opt label.none.sel { background:#5a1414; border-color:#ff4d4d; color:#ffc0c0; }
+  .missed-row { display:flex; align-items:center; gap:8px; }
+  .missed-row input { width:70px; padding:7px; background:#1e1e1e; border:1px solid #4a4d51;
+                      color:#fff; border-radius:5px; font-size:14px; }
+  textarea { width:100%; background:#1e1e1e; border:1px solid #4a4d51; color:#fff; border-radius:5px;
+             padding:8px; font-size:13px; resize:vertical; min-height:54px; }
+  .savebar { position:sticky; bottom:0; background:#252526; padding:10px 0 0; }
+  .prog { font-size:12px; color:#888; margin-top:6px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; margin-left:6px; }
+  .badge.done { background:#0e5026; color:#aaffd0; }
+  .badge.skip { background:#5a1414; color:#ffc0c0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>B榜检测结果人工核查</h1>
+  <span class="meta" id="metaInfo"></span>
+  <span class="navbtns">
+    <span style="font-size:12px;color:#888">跳到
+      <input id="gotoIdx" type="number" min="1" style="width:64px;padding:6px;background:#1e1e1e;border:1px solid #4a4d51;color:#fff;border-radius:5px;font-size:13px">
+      张</span>
+    <button class="ghost" onclick="gotoInput()">跳转</button>
+    <button class="ghost" onclick="jump(-1)">← 上一张 (A)</button>
+    <button class="ghost" onclick="jump(1)">下一张 (D) →</button>
+  </span>
+</header>
+<div class="wrap">
+  <div class="left">
+    <div class="stage" id="stage">
+      <img id="img" alt="检测图">
+      <svg class="box-svg" id="svg"></svg>
+    </div>
+  </div>
+  <div class="right">
+    <div id="imgInfo"></div>
+    <div>
+      <p class="sec-title">每个检测框确认 <span id="savestate"></span></p>
+      <div id="boxes"></div>
+      <div id="emptyTip" style="display:none" class="empty-tip">
+        模型对这幅图<b>未输出任何检测框</b>（判定为负样本）。<br>
+        若实际有手机，请在下方填写漏检数量。
+      </div>
+    </div>
+    <div>
+      <p class="sec-title">漏检（实际有但未检出的手机）
+        <button class="draw-btn" id="drawBtn" style="float:right;padding:3px 8px;font-size:11px" onclick="toggleDraw()">✎ 画漏标框</button>
+      </p>
+      <div class="missed-row">
+        <span style="font-size:12px;color:#888">数量</span>
+        <input type="number" id="missed" min="0" step="1" value="0">
+        <span style="font-size:12px;color:#888">个（与下方画框一致，点框可删）</span>
+      </div>
+      <div id="missedList" style="margin-top:6px;font-size:12px;color:#ffc800"></div>
+      <div id="drawHint" style="display:none;color:#ffc800;font-size:12px;margin-top:4px">画框模式：在图上拖拽框出漏检的手机，点已画框可删除</div>
+    </div>
+    <div>
+      <p class="sec-title">备注</p>
+      <textarea id="note" placeholder="例如：图中有遥控器被误检为手机 / 小图手机未检出 ..."></textarea>
+    </div>
+    <div class="savebar">
+      <button style="width:100%" onclick="saveAndNext()">保存并下一张 (S)</button>
+      <button class="ghost" style="width:100%;margin-top:6px" onclick="skip()">跳过此图</button>
+      <div class="prog" id="prog"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let cur = null;       // 当前 item
+let boxStatus = [];   // 每个框状态：'ok' | 'none'
+let missedBoxes = []; // 漏标框 [[x1,y1,x2,y2],...] 像素坐标
+let drawMode = false; // 画漏标框模式
+let drawing = null;  // 正在画的临时框 {x1,y1,x2,y2}
+
+const imgEl = document.getElementById('img');
+const svgEl = document.getElementById('svg');
+const stage = document.getElementById('stage');
+
+async function loadIdx(idx) {
+  const r = await fetch('/api/item?idx=' + idx);
+  if (!r.ok) { alert('加载失败'); return; }
+  cur = await r.json();
+  render();
+  try { localStorage.setItem('review_idx', idx); } catch(e){}
+  document.getElementById('gotoIdx').value = idx + 1;
+}
+
+function render() {
+  document.getElementById('metaInfo').textContent =
+    `第 ${cur.idx+1} / ${cur.total} 张 · ${cur.image_id}`;
+  imgEl.src = '/api/image?idx=' + cur.idx;
+  document.getElementById('imgInfo').innerHTML =
+    `<div style="font-size:12px;color:#888">尺寸 ${cur.width}×${cur.height} · ` +
+    `预测框 ${cur.boxes.length} 个</div>`;
+
+  // 还原已保存；默认"没问题"(ok)
+  const saved = cur.saved || {};
+  boxStatus = cur.boxes.map((_, i) => (saved.boxes && saved.boxes[i] && saved.boxes[i].status) || 'ok');
+  missedBoxes = (saved.missed_boxes || []).map(b => b.slice());
+  document.getElementById('missed').value = saved.missed != null ? saved.missed : missedBoxes.length;
+  document.getElementById('note').value = saved.note || '';
+
+  if (cur.is_empty_pred) {
+    document.getElementById('emptyTip').style.display = 'block';
+    document.getElementById('boxes').style.display = 'none';
+  } else {
+    document.getElementById('emptyTip').style.display = 'none';
+    document.getElementById('boxes').style.display = 'block';
+  }
+  renderBoxes();
+
+  const st = document.getElementById('savestate');
+  if (saved.done) st.innerHTML = '<span class="badge done">已标注</span>';
+  else st.innerHTML = '';
+  document.getElementById('prog').textContent = '';
+}
+
+function renderBoxes() {
+  const svg = document.getElementById('svg');
+  svg.innerHTML = '';
+  const W = cur.width, H = cur.height;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  // 画框模式下透明底，接收空白处点击
+  if (drawMode) {
+    const base = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    base.setAttribute('x',0); base.setAttribute('y',0);
+    base.setAttribute('width',W); base.setAttribute('height',H);
+    base.setAttribute('fill','transparent');
+    base.setAttribute('pointer-events','all');
+    svg.appendChild(base);
+  }
+  // 预测框
+  cur.boxes.forEach((b, i) => {
+    const [x1,y1,x2,y2] = b.bbox;
+    const st = boxStatus[i];
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x',x1); rect.setAttribute('y',y1);
+    rect.setAttribute('width',x2-x1); rect.setAttribute('height',y2-y1);
+    rect.setAttribute('class','box-rect ' + (st==='none'?'sel-none':st==='ok'?'sel-ok':''));
+    rect.setAttribute('pointer-events','all');
+    rect.style.cursor = 'pointer';
+    rect.addEventListener('click', (e) => { if (drawMode) return; toggleBox(i); });
+    svg.appendChild(rect);
+    const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    bg.setAttribute('x',x1); bg.setAttribute('y',Math.max(0,y1-16));
+    bg.setAttribute('width', 34); bg.setAttribute('height',16);
+    bg.setAttribute('class','box-label-bg ' + (st==='none'?'none':''));
+    svg.appendChild(bg);
+    const tx = document.createElementNS('http://www.w3.org/2000/svg','text');
+    tx.setAttribute('x',x1+4); tx.setAttribute('y',Math.max(11,y1-4));
+    tx.setAttribute('class','box-label'); tx.textContent = '框'+(i+1);
+    svg.appendChild(tx);
+  });
+  // 漏标框（黄）
+  missedBoxes.forEach((b, i) => {
+    const [x1,y1,x2,y2] = b;
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x',x1); rect.setAttribute('y',y1);
+    rect.setAttribute('width',x2-x1); rect.setAttribute('height',y2-y1);
+    rect.setAttribute('class','missed-rect');
+    rect.addEventListener('click', (e) => { e.stopPropagation(); delMissed(i); });
+    svg.appendChild(rect);
+    const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    bg.setAttribute('x',x1); bg.setAttribute('y',Math.max(0,y1-16));
+    bg.setAttribute('width', 30); bg.setAttribute('height',16);
+    bg.setAttribute('class','missed-label-bg');
+    svg.appendChild(bg);
+    const tx = document.createElementNS('http://www.w3.org/2000/svg','text');
+    tx.setAttribute('x',x1+4); tx.setAttribute('y',Math.max(11,y1-4));
+    tx.setAttribute('class','missed-label'); tx.textContent = '漏'+(i+1);
+    svg.appendChild(tx);
+  });
+  // 正在画：第一点(小圆点) 或 临时框
+  if (drawing) {
+    if (drawing.x1 === drawing.x2 && drawing.y1 === drawing.y2) {
+      const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      c.setAttribute('cx', drawing.x1); c.setAttribute('cy', drawing.y1);
+      c.setAttribute('r', 5); c.setAttribute('fill', '#ffc800');
+      svg.appendChild(c);
+    } else {
+      const r = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      r.setAttribute('x',Math.min(drawing.x1,drawing.x2));
+      r.setAttribute('y',Math.min(drawing.y1,drawing.y2));
+      r.setAttribute('width',Math.abs(drawing.x2-drawing.x1));
+      r.setAttribute('height',Math.abs(drawing.y2-drawing.y1));
+      r.setAttribute('class','missed-rect');
+      svg.appendChild(r);
+    }
+  }
+  renderBoxList();
+  renderMissedList();
+}
+
+function renderMissedList() {
+  const el = document.getElementById('missedList');
+  el.innerHTML = missedBoxes.map((b,i)=>`漏标框${i+1}: (${b.map(v=>Math.round(v)).join(', ')})`).join('<br>');
+}
+
+function renderBoxList() {
+  const boxDiv = document.getElementById('boxes');
+  if (cur.is_empty_pred) { boxDiv.innerHTML=''; return; }
+  boxDiv.innerHTML = '';
+  cur.boxes.forEach((b, i) => {
+    const st = boxStatus[i];
+    const item = document.createElement('div');
+    item.className = 'box-item';
+    item.innerHTML =
+      `<div class="bid">框${i+1} · conf ${b.confidence.toFixed(3)}</div>
+       <div class="opt">
+         <label class="ok ${st==='ok'?'sel':''}"><input type="radio" name="b${i}" ${st==='ok'?'checked':''} onchange="setStatus(${i},'ok')"><span>没问题</span></label>
+         <label class="none ${st==='none'?'sel':''}"><input type="radio" name="b${i}" ${st==='none'?'checked':''} onchange="setStatus(${i},'none')"><span>实际没有</span></label>
+       </div>`;
+    boxDiv.appendChild(item);
+  });
+}
+
+// 列表 radio 直接设值
+function setStatus(i, st) {
+  boxStatus[i] = st;
+  renderBoxes();
+}
+// 图上点击框：ok <-> none 切换
+function toggleBox(i) {
+  boxStatus[i] = (boxStatus[i] === 'none') ? 'ok' : 'none';
+  renderBoxes();
+}
+
+// ---- 漏标框画框：点两点成框 ----
+function toggleDraw() {
+  drawMode = !drawMode;
+  const btn = document.getElementById('drawBtn');
+  btn.classList.toggle('on', drawMode);
+  document.getElementById('drawHint').style.display = drawMode ? 'block' : 'none';
+  svgEl.style.cursor = drawMode ? 'crosshair' : 'default';
+  svgEl.classList.toggle('active', drawMode);
+  if (!drawMode) { drawing = null; renderBoxes(); }
+}
+function svgPoint(evt) {
+  const pt = svgEl.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  const ctm = svgEl.getScreenCTM().inverse();
+  const p = pt.matrixTransform(ctm);
+  return [p.x, p.y];
+}
+svgEl.addEventListener('click', (e) => {
+  if (!drawMode) return;
+  e.preventDefault();
+  const [x,y] = svgPoint(e);
+  if (!drawing) {
+    // 第一点：起点
+    drawing = {x1:x, y1:y, x2:x, y2:y};
+  } else {
+    // 第二点：成框
+    const x1 = Math.min(drawing.x1, x), y1 = Math.min(drawing.y1, y);
+    const x2 = Math.max(drawing.x1, x), y2 = Math.max(drawing.y1, y);
+    if (x2 - x1 > 3 && y2 - y1 > 3) {
+      missedBoxes.push([x1, y1, x2, y2]);
+      document.getElementById('missed').value = missedBoxes.length;
+    }
+    drawing = null;
+  }
+  renderBoxes();
+});
+function delMissed(i) {
+  missedBoxes.splice(i, 1);
+  document.getElementById('missed').value = missedBoxes.length;
+  renderBoxes();
+}
+
+async function save(skipFlag) {
+  if (!cur) return;
+  const payload = {
+    image_id: cur.image_id,
+    is_empty_pred: cur.is_empty_pred,
+    boxes: cur.boxes.map((_, i) => ({ idx:i, status: boxStatus[i] || 'ok' })),
+    missed: parseInt(document.getElementById('missed').value||'0',10),
+    missed_boxes: missedBoxes.map(b => b.map(v=>Math.round(v))),
+    note: document.getElementById('note').value,
+  };
+  const r = await fetch('/api/save', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const j = await r.json();
+  document.getElementById('savestate').innerHTML = '<span class="badge done">已保存</span>';
+}
+
+function saveAndNext() { save(false).then(()=>jump(1)); }
+function skip() {
+  // 跳过：仅前进，不写 done
+  jump(1);
+}
+let saving = false;
+async function autoSave() {
+  // 切图前自动保存当前标注（含漏标框），不前进
+  if (!cur || saving) return;
+  saving = true;
+  await save(false);
+  saving = false;
+}
+function jump(d) {
+  if (!cur) return;
+  let ni = cur.idx + d;
+  if (ni < 0) ni = 0;
+  if (ni >= cur.total) { alert('已是最后一张'); return; }
+  autoSave().then(() => loadIdx(ni));
+}
+function gotoInput() {
+  const v = parseInt(document.getElementById('gotoIdx').value || '1', 10);
+  let ni = (isNaN(v) ? 1 : v) - 1;
+  if (ni < 0) ni = 0;
+  if (ni >= cur.total) ni = cur.total - 1;
+  autoSave().then(() => loadIdx(ni));
+}
+
+// 键盘快捷键
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  if (drawMode && (e.key==='Escape')) { toggleDraw(); return; }
+  if (drawMode) return;  // 画框模式不响应导航
+  if (e.key === 'a' || e.key === 'A') jump(-1);
+  else if (e.key === 'd' || e.key === 'D') jump(1);
+  else if (e.key === 's' || e.key === 'S') saveAndNext();
+  else if (e.key === 'm' || e.key === 'M') toggleDraw();
+});
+
+// 初始位置：URL ?idx= 优先，否则 localStorage 上次位置，否则 0
+(function initStart(){
+  const p = new URLSearchParams(location.search).get('idx');
+  let start = 0;
+  if (p) start = Math.max(0, parseInt(p,10) - 1);
+  else { try { const s = localStorage.getItem('review_idx'); if (s!=null) start = parseInt(s,10); } catch(e){} }
+  loadIdx(start);
+})();
+</script>
+</body>
+</html>

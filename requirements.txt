@@ -1,0 +1,12 @@
+# 考场手机检测系统 - 依赖
+# 环境: Python 3.10 + CUDA 12.4
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+ultralytics==8.4.60
+numpy>=1.24
+Pillow>=10.0
+matplotlib>=3.8
+flask>=3.0
+python-dotenv>=1.0
+# 数据清洗(rar解压, 可选)
+rarfile>=4.0

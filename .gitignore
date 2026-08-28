@@ -1,0 +1,15 @@
+# 权重文件(大, 不入库)
+*.pt
+*.onnx
+*.engine
+# 数据集(大, 仅保留结构说明)
+phone_detect/dataset/
+data/
+runs/
+# 缓存
+__pycache__/
+*.pyc
+*.cache
+# 中间产物
+*.log
+.ipynb_checkpoints/

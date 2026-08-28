@@ -228,7 +228,28 @@ TRT 在构建引擎时，会在目标 GPU 上 **实际 benchmark 每一种可能
 
 > demo 图中：**绿框=正确检出（TP），红框=误检（FP），橙虚线=人工漏标真值（FN）**。
 
-### 5.3 错例分布洞察
+### 5.3 更多效果与错例图库
+
+以下均为 YOLO11m 在验证集上的真实输出，未人工修框，可直接反映模型能力边界。
+
+**正常监控视角 — 正确检出**
+![correct1](assets/demo_correct_69664704.png)
+![correct2](assets/demo_correct_970fa82d.png)
+![correct3](assets/demo_correct_9338f3e6.png)
+
+**黑边 / 监控画面误检**
+![fp1](assets/demo_fp_30f41970.png)
+![fp2](assets/demo_fp_9ad1d17b.png)
+
+**多手机 / 产品展示图漏检**
+![multi1](assets/demo_multi_b24ac2d1.png)
+![multi2](assets/demo_multi_54d8463c.png)
+
+**近景 / 手持 / 遮挡漏检**
+![miss1](assets/demo_miss_b0805e66.png)
+![miss2](assets/demo_miss_c4024912.png)
+
+### 5.4 错例分布洞察
 - FP 在 conf 各区间**分布均匀**（非集中低 conf）：提阈值到 0.35 仅砍 44% FP，高 conf（≥0.35）仍有 162 个 FP，多为手机局部重叠框（上半/下半身重复检）、笔记本/平板/遥控器误检。
 - 这说明单纯调阈值治标不治本，**误检源于相似物特征混淆 + 训练分布偏移**，需数据层面的难负样本增强（本项目已验证「用模型挖自己训过的负图」是死循环，见 §6）。
 
@@ -329,6 +350,33 @@ python scripts/train_breview.py --model yolo11m.pt --name breview
 4. **价值定位**：LocateAnything 类大模型适合 **开放词汇 / 长尾 / 零样本冷启动**（如「找出画面里所有遥控器」这种没训练过的类），或做**自动标注工具**反哺 YOLO 训练；作为**最终检测模型直接上线**在此场景不划算。
 5. **可改进方向**：若对大模型微调（用本项目 10960 张训练集 LoRA/全参微调），分数可大幅提升，但 7.3GB 权重 + 110ms 延迟在边缘监考设备仍是硬伤——**垂直场景专用小模型仍是落地最优解**。
 
+### 11.3 提示词语义区分能力测试
+
+进一步测试：LocateAnything 能否通过不同 prompt 区分 **「正在打电话的手机 / 没打电话拿在手里的手机 / 画报或展示台上的手机」**？
+
+对同一张图分别跑 4 个 prompt，结果可视化如下（每张图分四格：通用 phone / 打电话 / 手持 / 画报/展示台）：
+
+**测试1：真·打电话场景**
+![calling](assets/la_prompt_calling_0785f6d9-a4c6-44f6-b0ee-c186a5cc89ce.png)
+- 四个 prompt 全部命中同一部手机，框位置几乎一致。说明模型**无法区分「打电话」与「手持」**——只要手边有手机就检出。
+
+**测试2：真·手持场景**
+![holding](assets/la_prompt_holding_3751ff6d-6af1-4ea0-b708-e3152caf2106.png)
+- 同样四个 prompt 全部命中，「打电话」prompt 在并未通话的图上仍返回框。
+
+**测试3：真·画报/产品图**
+![poster](assets/la_prompt_poster_bcd8ce64-21f3-4c64-bbf5-5ce73cb028af.png)
+- 通用/海报命中，打电话/手持返回 0 框——这是**有效的语义区分**。
+
+**测试4：真·展示台多手机（最讽刺）**
+![poster_fail](assets/la_prompt_poster_1acd1746-c74c-42fb-8ba0-784f65cfc0d8.png)
+- 通用/打电话/手持 都检出 4 台手机，但明确要求「画报/展示台」的 prompt 反而 **0 框漏检**。
+
+#### 结论
+- LocateAnything 对这三类细粒度状态**没有稳定、可解释的区分能力**。
+- 它更像一个「以文本为条件的通用检测器」： prompt 描述得越具体，有时反而触发更多幻觉或漏检；输出文本 `ref` 中甚至出现重复/错乱 token。
+- 若业务上必须区分「打电话作弊」与「手持未使用」，应走**数据标注 + 专用分类器/关键点**路线，而非依赖大模型 prompt。
+
 ---
 
 ## 9. 文件结构
@@ -348,6 +396,7 @@ shoujijiance/
 │   ├── train.py                   # 训练
 │   ├── predict_submit.py         # 测试集推理
 │   ├── predict_val.py            # 验证集推理
+│   ├── make_demos.py             # 自动生成YOLO效果/错例demo图
 │   ├── evaluate.py               # 官方评测协议复刻 ★
 │   ├── scan_conf_breview.py      # 标注集阈值扫描 ★
 │   ├── predict_adaptive.py       # 自适应conf推理 ★
@@ -356,7 +405,9 @@ shoujijiance/
 │   ├── build_breview_dataset.py  # 核查结果→YOLO标签 ★
 │   ├── train_breview.py          # 回流训练
 │   ├── select_best_breview.py    # 按综合分选best(⚠含subprocess bug,用scan_conf替代)
-│   └── eval_locateanything.py    # 大模型对比: LocateAnything零样本检测评测 ★
+│   ├── eval_locateanything.py    # 大模型对比: LocateAnything零样本检测评测 ★
+│   ├── eval_locateanything_prompts.py  # 多prompt语义区分测试
+│   └── viz_la_prompts.py         # LocateAnything多prompt结果可视化
 ├── docs/
 │   └── 实验文档.md                # 完整实验日志(各版本对比/消融)
 └── submit_b11m_adaptive_c0.40_0.60.json  # 最终提交文件(B榜90.90)
